@@ -13,7 +13,7 @@ if (typeof FIREBASE_ENABLED !== 'undefined' && FIREBASE_ENABLED) {
 /* ══════════════════════════════════════════════
    IMAGE COMPRESSION  (canvas → base64 JPEG, ≈ 30-60 KB per image)
 ══════════════════════════════════════════════ */
-function compressImage(file, maxPx = 480, quality = 0.78) {
+function compressImage(file, maxPx = 200, quality = 0.65) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = reject;
@@ -483,7 +483,6 @@ document.getElementById('emojiCustom').addEventListener('input', e => {
 document.getElementById('itemModalClose').addEventListener('click',  () => closeModal('itemModal'));
 document.getElementById('itemModalCancel').addEventListener('click', () => closeModal('itemModal'));
 
-/* ── Submit ─────────────────────────────────────── */
 document.getElementById('itemForm').addEventListener('submit', async e => {
   e.preventDefault();
 
@@ -496,49 +495,57 @@ document.getElementById('itemForm').addEventListener('submit', async e => {
   if (!price) { document.getElementById('itemPrice').classList.add('error'); valid = false; }
   if (!valid) return;
 
-  const btn = document.getElementById('itemFormSubmit');
-  btn.textContent = 'Сохранение...';
-  btn.disabled    = true;
+  const editId     = document.getElementById('editItemId').value;
+  const categoryId = document.getElementById('itemCategory').value;
+  const emoji      = document.getElementById('emojiCustom').value.trim() || S.currentEmoji;
 
-  try {
-    const editId     = document.getElementById('editItemId').value;
-    const categoryId = document.getElementById('itemCategory').value;
-    const emoji      = document.getElementById('emojiCustom').value.trim() || S.currentEmoji;
+  let imageBase64 = S.editingItem?.imageBase64 || null;
+  if (S.editingItem?._removeImage) imageBase64 = null;
+  if (S.pendingImage !== null)     imageBase64 = S.pendingImage;
 
-    let imageBase64 = S.editingItem?.imageBase64 || null;
-    if (S.editingItem?._removeImage) imageBase64 = null;
-    if (S.pendingImage !== null)     imageBase64 = S.pendingImage;
+  const data = {
+    name,
+    price:       parseInt(price, 10),
+    weight:      document.getElementById('itemWeight').value.trim(),
+    emoji,
+    categoryId,
+    description: document.getElementById('itemDescription').value.trim(),
+  };
+  // Only include imageBase64 if it changed — avoids sending huge field unnecessarily
+  if (imageBase64 !== undefined) data.imageBase64 = imageBase64;
 
-    const data = {
-      name,
-      price:       parseInt(price, 10),
-      weight:      document.getElementById('itemWeight').value.trim(),
-      emoji,
-      categoryId,
-      description: document.getElementById('itemDescription').value.trim(),
-      imageBase64,
-    };
-
-    if (editId) {
-      await fbDb.collection('items').doc(editId).update(data);
-      // Update local state instantly — no reload
-      const idx = S.menu.items.findIndex(i => i.id === editId);
-      if (idx !== -1) S.menu.items[idx] = { ...S.menu.items[idx], ...data };
-      toast('Позиция обновлена ✓', 'success');
-    } else {
-      const docRef = await fbDb.collection('items').add({ ...data, active: true, order: S.menu.items.length });
-      // Add to local state instantly — no reload
-      S.menu.items.push({ id: docRef.id, ...data, active: true, order: S.menu.items.length });
-      toast('Позиция добавлена ✓', 'success');
-    }
-
+  if (editId) {
+    // Optimistic update: patch local state immediately
+    const idx = S.menu.items.findIndex(i => i.id === editId);
+    if (idx !== -1) S.menu.items[idx] = { ...S.menu.items[idx], ...data };
     closeModal('itemModal');
     refreshUI();
-  } catch (err) {
-    toast('Ошибка: ' + explainError(err), 'error');
-  } finally {
-    btn.textContent = 'Сохранить';
-    btn.disabled    = false;
+    toast('Позиция обновлена ✓', 'success');
+    // Write to Firestore in background
+    fbDb.collection('items').doc(editId).update(data).catch(err => {
+      toast('Ошибка сохранения: ' + explainError(err), 'error');
+      loadMenu(); // reload to restore correct state on error
+    });
+  } else {
+    // Optimistic add: generate temp id, add locally, then confirm with real Firestore id
+    const tempId   = 'tmp-' + Date.now();
+    const newItem  = { id: tempId, ...data, imageBase64: imageBase64 ?? null, active: true, order: S.menu.items.length };
+    S.menu.items.push(newItem);
+    closeModal('itemModal');
+    refreshUI();
+    toast('Позиция добавлена ✓', 'success');
+    // Write to Firestore in background, then swap temp id with real id
+    fbDb.collection('items').add({ ...data, imageBase64: imageBase64 ?? null, active: true, order: S.menu.items.length - 1 })
+      .then(docRef => {
+        const idx = S.menu.items.findIndex(i => i.id === tempId);
+        if (idx !== -1) S.menu.items[idx].id = docRef.id;
+        saveMenuCache();
+      })
+      .catch(err => {
+        toast('Ошибка сохранения: ' + explainError(err), 'error');
+        S.menu.items = S.menu.items.filter(i => i.id !== tempId); // rollback
+        refreshUI();
+      });
   }
 });
 
