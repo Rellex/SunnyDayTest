@@ -41,6 +41,12 @@ function rerenderMenuAfterRealtimeUpdate() {
     state.activeCategory = categories[0]?.id || null;
   }
   reconcileCartWithMenu();
+  // Показать меню если город уже выбран, но меню ещё не отображалось
+  const wrapper = document.getElementById('menuWrapper');
+  if (wrapper && wrapper.style.display !== 'block') {
+    document.getElementById('cityPrompt').style.display = 'none';
+    wrapper.style.display = 'block';
+  }
   renderCategories();
   renderMenuContent();
   updateCartFab();
@@ -66,12 +72,15 @@ function loadMenuCache() {
 function getCategories() {
   if (menuLoadError && isFirebaseMode()) return [];
   if (dynamicMenu) return dynamicMenu.categories.filter(c => c.active !== false);
+  // Если Firebase включён — не показываем статичные данные, ждём Firestore
+  if (isFirebaseMode()) return [];
   return CATEGORIES;
 }
 
 function getItems(catId) {
   if (menuLoadError && isFirebaseMode()) return [];
   if (dynamicMenu) return dynamicMenu.items.filter(i => i.categoryId === catId && i.active !== false);
+  if (isFirebaseMode()) return [];
   return MENU[catId] || [];
 }
 
@@ -83,6 +92,7 @@ function findItemAny(id) {
 function getAllItems() {
   if (menuLoadError && isFirebaseMode()) return [];
   if (dynamicMenu) return dynamicMenu.items.filter(i => i.active !== false);
+  if (isFirebaseMode()) return [];
   return Object.values(MENU).flat();
 }
 
@@ -294,11 +304,16 @@ function renderMenuContent() {
   const cats = getCategories();
   if (!cats.length) {
     const empty = document.createElement('div');
-    empty.style.padding = '24px 16px';
+    empty.style.padding = '40px 16px';
     empty.style.textAlign = 'center';
     empty.style.color = '#757575';
     empty.style.fontSize = '14px';
-    empty.textContent = menuLoadError || 'В этой категории пока нет доступных позиций.';
+    // Показываем спиннер загрузки если Firebase ещё не вернул данные
+    if (isFirebaseMode() && !dynamicMenu && !menuLoadError) {
+      empty.innerHTML = '<div style="font-size:32px;margin-bottom:12px">☀️</div><div>Загружаем меню...</div>';
+    } else {
+      empty.textContent = menuLoadError || 'В этой категории пока нет доступных позиций.';
+    }
     content.appendChild(empty);
     return;
   }
@@ -763,7 +778,7 @@ async function init() {
     const cityObj = CITIES.find(c => c.id === state.city);
     if (cityObj) {
       document.getElementById('headerCityName').textContent = cityObj.name;
-      showMenu();
+      showMenu(); // показываем меню сразу — с данными из Firestore (уже загружены выше)
       renderAddressesList();
     }
   }
