@@ -70,30 +70,23 @@ function loadMenuCache() {
 }
 
 function getCategories() {
-  if (menuLoadError && isFirebaseMode()) return [];
-  if (dynamicMenu) return dynamicMenu.categories.filter(c => c.active !== false);
-  // Если Firebase включён — не показываем статичные данные, ждём Firestore
-  if (isFirebaseMode()) return [];
-  return CATEGORIES;
+  if (!dynamicMenu || menuLoadError) return [];
+  return dynamicMenu.categories.filter(c => c.active !== false);
 }
 
 function getItems(catId) {
-  if (menuLoadError && isFirebaseMode()) return [];
-  if (dynamicMenu) return dynamicMenu.items.filter(i => i.categoryId === catId && i.active !== false);
-  if (isFirebaseMode()) return [];
-  return MENU[catId] || [];
+  if (!dynamicMenu || menuLoadError) return [];
+  return dynamicMenu.items.filter(i => i.categoryId === catId && i.active !== false);
 }
 
 function findItemAny(id) {
   if (dynamicMenu) return dynamicMenu.items.find(i => i.id === id) || null;
-  return findItem(id);
+  return null;
 }
 
 function getAllItems() {
-  if (menuLoadError && isFirebaseMode()) return [];
-  if (dynamicMenu) return dynamicMenu.items.filter(i => i.active !== false);
-  if (isFirebaseMode()) return [];
-  return Object.values(MENU).flat();
+  if (!dynamicMenu || menuLoadError) return [];
+  return dynamicMenu.items.filter(i => i.active !== false);
 }
 
 /* Unified image src: base64 stored in Firestore takes priority */
@@ -145,10 +138,16 @@ function startRealtimeMenuSync(db) {
 }
 
 async function loadMenuFromAPI() {
-  // 1️⃣ Firebase Firestore (single source of truth when enabled)
   if (isFirebaseMode()) {
+    // Сначала показываем кэш если есть — чтобы не висело "Загружаем меню..."
+    const cached = loadMenuCache();
+    if (cached && cached.categories.length > 0) {
+      dynamicMenu = cached;
+      setMenuLoadError(null);
+      rerenderMenuAfterRealtimeUpdate();
+    }
+
     try {
-      // Reuse existing app if already initialized (avoids duplicate-app error)
       let app;
       try { app = firebase.app(); } catch { app = firebase.initializeApp(FIREBASE_CONFIG); }
       const db = firebase.firestore(app);
@@ -165,31 +164,18 @@ async function loadMenuFromAPI() {
       startRealtimeMenuSync(db);
       return;
     } catch (err) {
-      const cached = loadMenuCache();
-      if (cached) {
-        dynamicMenu = cached;
-        setMenuLoadError('Не удалось обновить меню из базы. Показана сохранённая версия.');
-      } else {
-        dynamicMenu = { categories: [], items: [] };
-        setMenuLoadError('Не удалось загрузить меню из базы. Обновления из админки временно недоступны.');
-      }
       console.error('Failed to load menu from Firestore:', err);
+      if (!dynamicMenu) {
+        // Нет ни свежих данных ни кэша — показываем пустое меню с ошибкой
+        dynamicMenu = { categories: [], items: [] };
+        setMenuLoadError('Не удалось загрузить меню. Проверьте подключение.');
+      }
       return;
     }
   }
 
-  // 2️⃣ Local Express server (used only in non-Firebase mode)
-  try {
-    const res = await fetch('/api/menu');
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    dynamicMenu = await res.json();
-    saveMenuCache(dynamicMenu);
-    setMenuLoadError(null);
-    return;
-  } catch { /* fall through */ }
-
-  // 3️⃣ Static data.js fallback
-  dynamicMenu = null;
+  // Без Firebase — пустое меню (админ должен всё заполнить)
+  dynamicMenu = { categories: [], items: [] };
   setMenuLoadError(null);
 }
 
@@ -308,11 +294,14 @@ function renderMenuContent() {
     empty.style.textAlign = 'center';
     empty.style.color = '#757575';
     empty.style.fontSize = '14px';
-    // Показываем спиннер загрузки если Firebase ещё не вернул данные
-    if (isFirebaseMode() && !dynamicMenu && !menuLoadError) {
+    if (menuLoadError) {
+      empty.innerHTML = '<div style="font-size:32px;margin-bottom:12px">⚠️</div><div>' + menuLoadError + '</div>';
+    } else if (!dynamicMenu) {
+      // Ещё грузится
       empty.innerHTML = '<div style="font-size:32px;margin-bottom:12px">☀️</div><div>Загружаем меню...</div>';
     } else {
-      empty.textContent = menuLoadError || 'В этой категории пока нет доступных позиций.';
+      // Загрузилось, но меню пустое — значит админ ещё ничего не добавил
+      empty.innerHTML = '<div style="font-size:32px;margin-bottom:12px">🍽️</div><div>Меню пока не заполнено</div>';
     }
     content.appendChild(empty);
     return;
